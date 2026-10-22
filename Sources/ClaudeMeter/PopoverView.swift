@@ -8,18 +8,20 @@ struct PopoverView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             if let e = model.error, model.snapshot == nil {
-                Text(e.localizedDescription).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text(e.localizedDescription).foregroundStyle(Palette.warn).fixedSize(horizontal: false, vertical: true)
             }
             WindowCard(title: "5-hour window", forecast: model.fiveHour, now: model.now,
                        samples: model.history.compactMap { s in s.fiveHour.map { (s.at, $0) } })
-            Divider()
+            Divider().overlay(Palette.hairline)
             WindowCard(title: "Week", forecast: model.week, now: model.now,
                        samples: model.history.compactMap { s in s.week.map { (s.at, $0) } })
-            Divider()
+            Divider().overlay(Palette.hairline)
             footer
         }
+        .foregroundStyle(Palette.text)
         .padding(16)
         .frame(width: 340)
+        .background(Palette.background)
     }
 
     private var footer: some View {
@@ -28,13 +30,13 @@ struct PopoverView: View {
             Text(model.isWorkingNow
                  ? "Counting \(days(s)) \(s.dayStart)–\(s.dayEnd)"
                  : "Outside working hours (\(days(s)) \(s.dayStart)–\(s.dayEnd)). Forecasts assume you stop until then.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .font(.caption).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true)
             if let e = model.error, model.snapshot != nil {
-                Text(e.localizedDescription).font(.caption).foregroundStyle(.orange)
+                Text(e.localizedDescription).font(.caption).foregroundStyle(Palette.warn)
             }
             HStack {
                 if let at = model.snapshot?.fetchedAt {
-                    Text("Updated \(Format.countdown(model.now.timeIntervalSince(at))) ago").font(.caption).foregroundStyle(.secondary)
+                    Text("Updated \(Format.countdown(model.now.timeIntervalSince(at))) ago").font(.caption).foregroundStyle(Palette.muted)
                 }
                 Spacer()
                 Button(model.refreshing ? "Refreshing…" : "Refresh") { model.refresh() }.disabled(model.refreshing)
@@ -59,26 +61,26 @@ struct WindowCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline) {
-                Text(title.uppercased()).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text(title.uppercased()).font(.caption.weight(.bold)).foregroundStyle(Palette.muted)
                 Spacer()
                 if let f = forecast {
                     Text("resets \(Format.moment(f.resetsAt, now: now)) · in \(Format.countdown(f.resetsAt.timeIntervalSince(now)))")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundStyle(Palette.muted)
                 }
             }
             if let f = forecast {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(Format.percent(f.utilization)).font(.system(size: 26, weight: .bold)).monospacedDigit()
-                    Text(verdict(f)).font(.callout.weight(.semibold)).foregroundStyle(color(f.status))
+                    Text(verdict(f)).font(.callout.weight(.semibold)).foregroundStyle(Palette.status(f.status))
                 }
                 Track(forecast: f).frame(height: 10)
                 chart(f)
                 row("Burn rate", Format.rate(f.burnPerHour))
-                row("Projected at reset", Format.percent(f.projected), color(f.status))
+                row("Projected at reset", Format.percent(f.projected), f.status == .ok ? Palette.text : Palette.status(f.status))
                 row("Work time left", Format.workHours(f.remainingWork))
                 if let a = f.affordablePerHour { row("Pace to finish at 100%", Format.rate(a)) }
             } else {
-                Text("No data yet").foregroundStyle(.secondary)
+                Text("No data yet").foregroundStyle(Palette.muted)
             }
         }
     }
@@ -89,13 +91,13 @@ struct WindowCard: View {
         return f.status == .warn ? "cutting it close" : "on track"
     }
 
-    private func color(_ s: PaceStatus) -> Color {
-        switch s { case .ok: .green; case .warn: .orange; case .over: .red }
-    }
-
-    private func row(_ k: String, _ v: String, _ c: Color = .primary) -> some View {
-        HStack { Text(k).foregroundStyle(.secondary); Spacer(); Text(v).monospacedDigit().foregroundStyle(c) }
-            .font(.callout)
+    private func row(_ k: String, _ v: String, _ c: Color = Palette.text) -> some View {
+        HStack {
+            Text(k).foregroundStyle(Palette.muted)
+            Spacer()
+            Text(v).monospacedDigit().fontWeight(.medium).foregroundStyle(c)
+        }
+        .font(.callout)
     }
 
     /// Usage so far in this window, plus a dashed line to the projected value at reset.
@@ -107,24 +109,36 @@ struct WindowCard: View {
             Chart {
                 ForEach(Array(points.enumerated()), id: \.offset) { _, p in
                     LineMark(x: .value("Time", p.0), y: .value("Used", p.1), series: .value("s", "used"))
-                        .foregroundStyle(.tint)
+                        .foregroundStyle(Palette.accent).lineStyle(StrokeStyle(lineWidth: 2))
                 }
                 LineMark(x: .value("Time", now), y: .value("Used", f.utilization), series: .value("s", "proj"))
-                    .foregroundStyle(color(f.status)).lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+                    .foregroundStyle(Palette.status(f.status)).lineStyle(StrokeStyle(lineWidth: 2, dash: [4, 3]))
                 LineMark(x: .value("Time", end), y: .value("Used", endValue), series: .value("s", "proj"))
-                    .foregroundStyle(color(f.status)).lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
-                RuleMark(y: .value("Limit", 100)).foregroundStyle(.secondary.opacity(0.5))
+                    .foregroundStyle(Palette.status(f.status)).lineStyle(StrokeStyle(lineWidth: 2, dash: [4, 3]))
+                RuleMark(y: .value("Limit", 100)).foregroundStyle(Palette.muted)
                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 3]))
             }
             .chartXScale(domain: f.windowStart...f.resetsAt)
             .chartYScale(domain: 0...max(100, endValue))
-            .chartYAxis { AxisMarks(values: [0, 50, 100]) { AxisGridLine(); AxisValueLabel(format: FloatingPointFormatStyle<Double>.number.precision(.fractionLength(0))) } }
+            .chartXAxis {
+                AxisMarks(preset: .aligned, values: .automatic(desiredCount: 4)) { _ in
+                    AxisGridLine().foregroundStyle(Palette.hairline)
+                    AxisValueLabel().foregroundStyle(Palette.muted)
+                }
+            }
+            .chartYAxis {
+                AxisMarks(values: [0, 50, 100]) { _ in
+                    AxisGridLine().foregroundStyle(Palette.hairline)
+                    AxisValueLabel(format: FloatingPointFormatStyle<Double>.number.precision(.fractionLength(0)))
+                        .foregroundStyle(Palette.muted)
+                }
+            }
             .frame(height: 70)
         }
     }
 }
 
-/// Wide version of the menu bar's mini bar.
+/// Wide version of the menu bar's mini bar: solid = used, lighter = projected by reset.
 struct Track: View {
     let forecast: Forecast
 
@@ -133,15 +147,12 @@ struct Track: View {
             let w = g.size.width
             let used = min(1, forecast.utilization / 100)
             let proj = min(1, max(used, forecast.projected / 100))
+            let fill = Palette.fill(forecast.status)
             ZStack(alignment: .leading) {
-                Capsule().fill(.quaternary)
-                Capsule().fill(.secondary.opacity(0.45)).frame(width: w * proj)
+                Capsule().fill(Palette.track)
+                Capsule().fill(fill.opacity(0.35)).frame(width: w * proj)
                 Capsule().fill(fill).frame(width: max(2, w * used))
             }
         }
-    }
-
-    private var fill: Color {
-        switch forecast.status { case .ok: .accentColor; case .warn: .orange; case .over: .red }
     }
 }

@@ -125,4 +125,12 @@ let hour: TimeInterval = 3600
         let old = Sample(at: now.addingTimeInterval(-9 * 86400), fiveHour: 1, week: 1)
         #expect(History.appending(Sample(at: now, fiveHour: 2, week: 2), to: [old]).count == 1)
     }
+
+    @Test func snapshotRoundTripsThroughJSON() throws {
+        let s = UsageSnapshot(fiveHour: LimitWindow(utilization: 12, resetsAt: Date(timeIntervalSince1970: 1_800_000_000)),
+                              week: nil, fetchedAt: Date(timeIntervalSince1970: 1_799_990_000))
+        let enc = JSONEncoder(); enc.dateEncodingStrategy = .iso8601
+        let dec = JSONDecoder(); dec.dateDecodingStrategy = .iso8601
+        #expect(try dec.decode(UsageSnapshot.self, from: enc.encode(s)) == s)
+    }
 }

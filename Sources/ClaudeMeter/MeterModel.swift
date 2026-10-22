@@ -3,7 +3,7 @@ import MeterCore
 
 @MainActor
 final class MeterModel: ObservableObject {
-    @Published private(set) var snapshot: UsageSnapshot?
+    @Published private(set) var snapshot: UsageSnapshot? = LastSnapshot.load()
     @Published private(set) var error: UsageError?
     @Published private(set) var history: [Sample] = History.load()
     @Published private(set) var now = Date()
@@ -40,24 +40,47 @@ final class MeterModel: ObservableObject {
         }
     }
 
+    /// No requests before this (set after a 429).
+    private var backoffUntil = Date.distantPast
+    static let defaultBackoff: TimeInterval = 5 * 60
+
     func refresh() {
+        guard !refreshing, Date() >= backoffUntil else { return }
+        Task { await load() }
+    }
+
+    /// Opening the popover refreshes, but not more than once a minute.
+    func refreshIfStale() {
+        if let at = snapshot?.fetchedAt, Date().timeIntervalSince(at) < 60 { return }
+        refresh()
+    }
+
+    /// Shows fixed data instead of polling. Used by `--preview-popover`.
+    func show(_ s: UsageSnapshot, history h: [Sample]) {
+        snapshot = s; error = nil; now = s.fetchedAt; history = h
+    }
+
+    func load() async {
         guard !refreshing else { return }
         refreshing = true
-        Task {
-            defer { refreshing = false; onChange?() }
-            do {
-                let s = try await client.fetch()
-                snapshot = s
-                error = nil
-                now = s.fetchedAt
-                history = History.appending(Sample(at: s.fetchedAt, fiveHour: s.fiveHour?.utilization,
-                                                   week: s.week?.utilization), to: history)
-                History.save(history)
-            } catch let e as UsageError {
-                error = e
-            } catch {
-                self.error = .network(error.localizedDescription)
+        defer { refreshing = false; onChange?() }
+        do {
+            let s = try await client.fetch()
+            snapshot = s
+            error = nil
+            now = s.fetchedAt
+            history = History.appending(Sample(at: s.fetchedAt, fiveHour: s.fiveHour?.utilization,
+                                               week: s.week?.utilization), to: history)
+            History.save(history)
+            LastSnapshot.save(s)
+        } catch let e as UsageError {
+            error = e
+            log("fetch failed: \(e.localizedDescription)")
+            if case .rateLimited(let retry) = e {
+                backoffUntil = Date().addingTimeInterval(max(60, retry ?? Self.defaultBackoff))
             }
+        } catch {
+            self.error = .network(error.localizedDescription)
         }
     }
 }

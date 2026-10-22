@@ -1,6 +1,6 @@
 import Foundation
 
-public struct LimitWindow: Equatable, Sendable {
+public struct LimitWindow: Codable, Equatable, Sendable {
     public var utilization: Double
     public var resetsAt: Date
 
@@ -9,20 +9,24 @@ public struct LimitWindow: Equatable, Sendable {
     }
 }
 
-public struct UsageSnapshot: Equatable, Sendable {
+public struct UsageSnapshot: Codable, Equatable, Sendable {
     public var fiveHour: LimitWindow?
     public var week: LimitWindow?
     public var fetchedAt: Date
+
+    public init(fiveHour: LimitWindow?, week: LimitWindow?, fetchedAt: Date) {
+        self.fiveHour = fiveHour; self.week = week; self.fetchedAt = fetchedAt
+    }
 }
 
 public enum UsageError: Error, Equatable, LocalizedError {
-    case noLogin, loginExpired, http(Int), badResponse, network(String)
+    case noLogin, loginExpired, rateLimited(retryAfter: TimeInterval?), http(Int), badResponse, network(String)
 
     public var errorDescription: String? {
         switch self {
         case .noLogin: "No Claude Code login found. Run `claude` and log in."
         case .loginExpired: "Claude Code login has expired. Open Claude Code to refresh it."
-        case .http(429): "Rate limited by the usage API. Retrying soon."
+        case .rateLimited: "Rate limited by the usage API. Showing the last reading; retrying in a few minutes."
         case .http(let code): "Usage API returned HTTP \(code)."
         case .badResponse: "Couldn't read the usage API response."
         case .network(let msg): "Network error: \(msg)"
@@ -52,6 +56,10 @@ public struct UsageClient: Sendable {
 
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         if code == 401 || code == 403 { throw UsageError.loginExpired }
+        if code == 429 {
+            let retry = (resp as? HTTPURLResponse)?.value(forHTTPHeaderField: "Retry-After").flatMap(TimeInterval.init)
+            throw UsageError.rateLimited(retryAfter: retry)
+        }
         guard code == 200 else { throw UsageError.http(code) }
         return try Self.parse(data, fetchedAt: Date())
     }

@@ -62,3 +62,23 @@ public struct History: Sendable {
         return (samples + [s]).filter { $0.at >= cutoff }
     }
 }
+
+/// The last successful reading, so a restart (e.g. during a rate limit) shows data straight away.
+public enum LastSnapshot {
+    public static var url: URL { History.url.deletingLastPathComponent().appendingPathComponent("last.json") }
+
+    /// The saved reading, minus any window that has reset since (its usage is unknown).
+    public static func load(now: Date = Date()) -> UsageSnapshot? {
+        let dec = JSONDecoder(); dec.dateDecodingStrategy = .iso8601
+        guard let data = try? Data(contentsOf: url), var s = try? dec.decode(UsageSnapshot.self, from: data) else { return nil }
+        if let f = s.fiveHour, f.resetsAt <= now { s.fiveHour = nil }
+        if let w = s.week, w.resetsAt <= now { s.week = nil }
+        return s.fiveHour == nil && s.week == nil ? nil : s
+    }
+
+    public static func save(_ s: UsageSnapshot) {
+        let enc = JSONEncoder(); enc.dateEncodingStrategy = .iso8601
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? enc.encode(s).write(to: url, options: .atomic)
+    }
+}
