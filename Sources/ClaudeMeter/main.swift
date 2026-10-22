@@ -155,6 +155,8 @@ enum Preview {
              .init(label: "WK", forecast: fc(live?.week, MeterModel.weekLength))],
             [.init(label: "5H", forecast: fc(LimitWindow(utilization: 41, resetsAt: now.addingTimeInterval(6780)), MeterModel.fiveHourLength)),
              .init(label: "WK", forecast: fc(LimitWindow(utilization: 71, resetsAt: now.addingTimeInterval(4.6 * 86400)), MeterModel.weekLength))],
+            [.init(label: "5H", forecast: fc(LimitWindow(utilization: 60, resetsAt: now.addingTimeInterval(3600)), MeterModel.fiveHourLength)),
+             .init(label: "WK", forecast: fc(LimitWindow(utilization: 20, resetsAt: now.addingTimeInterval(4.6 * 86400)), MeterModel.weekLength))],
         ]
         let images = BarStyle.allCases.flatMap { s in sets.map { StatusImage.make($0, now: now, style: s) } }
         let pad: CGFloat = 8, rowH = StatusImage.height, scale: CGFloat = 2
