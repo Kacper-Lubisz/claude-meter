@@ -40,7 +40,7 @@ Needs macOS 14 or later and the Xcode Command Line Tools (`xcode-select --instal
 ```sh
 scripts/install.sh            # build, install to ~/Applications, start at login
 scripts/install.sh uninstall  # remove
-swift test                    # forecast and calendar tests
+scripts/test.sh               # forecast and calendar tests
 ```
 
 ## Where the data comes from
