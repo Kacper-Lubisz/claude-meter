@@ -17,7 +17,9 @@ if [[ "${1:-}" == "uninstall" ]]; then
   exit 0
 fi
 
-echo "Building..."
+VERSION="$(sed -n 's/^ *public static let current = "\(.*\)"$/\1/p' Sources/MeterCore/Version.swift)"
+
+echo "Building $VERSION..."
 swift build -c release
 BIN="$(swift build -c release --show-bin-path)/ClaudeMeter"
 
@@ -33,7 +35,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleName</key><string>Claude Meter</string>
   <key>CFBundleExecutable</key><string>ClaudeMeter</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
 </dict></plist>

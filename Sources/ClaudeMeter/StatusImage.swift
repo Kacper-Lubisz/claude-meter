@@ -3,16 +3,15 @@ import MeterCore
 
 /// Draws the menu bar item. A leading dot shows the most urgent window
 /// (green on track, orange cutting it close, red on course to run out). Each window
-/// then gets a mini bar (solid = used, light = projected by reset, red cap = overshoot)
-/// plus its percent, coloured the same way when it needs attention.
-/// Three widths, so it still fits when the menu bar is crowded:
-///   full     label · 40pt bar · % · deadline (reset countdown, or when you'll run out)
+/// then gets a mini bar (fill = used, vertical tick = working time elapsed, red cap =
+/// projected overshoot) plus its percent, coloured the same way when it needs attention.
+/// Fill past the tick means you're using it faster than evenly across the window.
+/// Three widths, picked in config.json:
+///   compact  both windows stacked on two thin rows, about 75pt wide (default)
 ///   medium   label · 26pt bar · %, and the deadline only when you're on course to run out
-///   compact  both windows stacked on two thin rows, about 75pt wide
-enum BarStyle: String, CaseIterable, Comparable {
+///   full     label · 40pt bar · % · deadline (reset countdown, or when you'll run out)
+enum BarStyle: String, CaseIterable {
     case full, medium, compact
-    static func < (a: Self, b: Self) -> Bool { allCases.firstIndex(of: a)! < allCases.firstIndex(of: b)! }
-    var narrower: BarStyle? { self == .full ? .medium : self == .medium ? .compact : nil }
 }
 
 enum StatusImage {
@@ -137,15 +136,24 @@ enum StatusImage {
         guard let f else { return }
 
         let used = min(1, max(0, f.utilization / 100))
-        let projected = min(1, max(used, f.projected / 100))
         let fill = f.status == .ok ? NSColor.labelColor : color(f.status)
         NSGraphicsContext.saveGraphicsState()
         NSBezierPath(roundedRect: track, xRadius: r, yRadius: r).addClip()
-        fill.withAlphaComponent(0.45).setFill()
-        NSRect(x: track.minX, y: track.minY, width: track.width * projected, height: track.height).fill()
         fill.setFill()
         NSRect(x: track.minX, y: track.minY, width: track.width * used, height: track.height).fill()
         NSGraphicsContext.restoreGraphicsState()
+
+        if let t = f.elapsedFraction {
+            let x = (track.minX + track.width * min(1, t)).rounded()
+            let tick = NSRect(x: x - 0.75, y: track.minY - 2, width: 1.5, height: track.height + 4)
+            // Knock a gap out of the fill so the tick reads when it sits on solid fill of the same colour.
+            NSGraphicsContext.current?.compositingOperation = .destinationOut
+            NSColor.black.setFill()
+            tick.insetBy(dx: -1, dy: 0).fill()
+            NSGraphicsContext.current?.compositingOperation = .sourceOver
+            NSColor.labelColor.setFill()
+            tick.fill()
+        }
 
         if f.status == .over {
             NSColor.systemRed.setFill()

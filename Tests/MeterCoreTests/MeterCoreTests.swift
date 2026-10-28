@@ -56,6 +56,7 @@ let hour: TimeInterval = 3600
                               now: at("2026-10-21 13:15"), schedule: sched, calendar: london)
         #expect(f.elapsedWork == 21.25 * hour)
         #expect(f.remainingWork == 21.25 * hour)
+        #expect(f.elapsedFraction == 0.5)
         #expect(abs(f.projected - 50) < 1e-9)
         #expect(f.status == .ok)
         #expect(f.runsOutAt == nil)
@@ -92,6 +93,7 @@ let hour: TimeInterval = 3600
                               now: at("2026-10-24 12:00"), schedule: sched, calendar: london)
         #expect(f.burnPerHour == 40)
         #expect(f.projected == 10)
+        #expect(f.elapsedFraction == nil)
     }
 
     @Test func alreadyAtLimit() {
@@ -122,8 +124,9 @@ let hour: TimeInterval = 3600
 
     @Test func historyDropsOldSamples() {
         let now = Date()
-        let old = Sample(at: now.addingTimeInterval(-9 * 86400), fiveHour: 1, week: 1)
-        #expect(History.appending(Sample(at: now, fiveHour: 2, week: 2), to: [old]).count == 1)
+        let old = Sample(at: now.addingTimeInterval(-43 * 86400), fiveHour: 1, week: 1)
+        let recent = Sample(at: now.addingTimeInterval(-41 * 86400), fiveHour: 1, week: 1)
+        #expect(History.pruned([old, recent], now: now) == [recent])
     }
 
     @Test func snapshotRoundTripsThroughJSON() throws {

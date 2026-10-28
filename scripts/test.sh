@@ -3,8 +3,10 @@
 # swiftbuild backend doesn't find the Swift Testing macro plugin, so point it there.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-PLUGINS="$(xcode-select -p)/usr/lib/swift/host/plugins/testing"
-if [[ -d "$PLUGINS" ]]; then
-  exec swift test -Xswiftc -plugin-path -Xswiftc "$PLUGINS" "$@"
+if command -v xcode-select >/dev/null; then
+  PLUGINS="$(xcode-select -p)/usr/lib/swift/host/plugins/testing"
+  if [[ -d "$PLUGINS" ]]; then
+    exec swift test -Xswiftc -plugin-path -Xswiftc "$PLUGINS" "$@"
+  fi
 fi
 exec swift test "$@"

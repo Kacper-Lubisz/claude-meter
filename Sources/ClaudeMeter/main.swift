@@ -4,16 +4,14 @@ import SwiftUI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private let model = MeterModel()
+    /// Lazy so the preview modes never load (or migrate) the real history.
+    private lazy var model = MeterModel()
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
 
-    /// Style forced by config, or nil for auto.
-    private lazy var pinnedStyle: BarStyle? = model.config.barStyle.flatMap(BarStyle.init(rawValue:))
-    private var style: BarStyle = .full
-    private var screensAsleep = false
-    private var fitCheck: DispatchWorkItem?
-    private var loggedStyle: BarStyle?
+    /// Fixed rather than fitted to the free space: switching widths as the menu bar
+    /// filled up made the item jump around.
+    private lazy var style = model.config.barStyle.flatMap(BarStyle.init(rawValue:)) ?? .compact
 
     func applicationDidFinishLaunching(_ note: Notification) {
         if let i = CommandLine.arguments.firstIndex(of: "--preview-popover"), i + 1 < CommandLine.arguments.count {
@@ -23,30 +21,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if let i = CommandLine.arguments.firstIndex(of: "--preview"), i + 1 < CommandLine.arguments.count {
             let path = CommandLine.arguments[i + 1]
-            Task { await Preview.render(to: path, schedule: model.config.schedule); NSApp.terminate(nil) }
+            Task { await Preview.render(to: path, schedule: MeterConfig.load().schedule); NSApp.terminate(nil) }
             return
         }
 
-        style = pinnedStyle ?? .full
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.imagePosition = .imageOnly
         statusItem.button?.target = self
         statusItem.button?.action = #selector(toggle)
 
         popover.behavior = .transient
-        popover.contentViewController = NSHostingController(rootView: PopoverView(model: model))
-
-        let nc = NotificationCenter.default, wnc = NSWorkspace.shared.notificationCenter
-        // A display change can free up (or take away) menu bar room: start wide again.
-        nc.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.resetFit() }
-        }
-        wnc.addObserver(forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.screensAsleep = true }
-        }
-        wnc.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.screensAsleep = false; self?.resetFit() }
-        }
+        let content = NSHostingController(rootView: PopoverView(model: model))
+        content.sizingOptions = .preferredContentSize // tabs differ in height; the popover follows
+        popover.contentViewController = content
 
         model.onChange = { [weak self] in self?.redraw() }
         redraw()
@@ -57,80 +44,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let message: String? = model.snapshot == nil ? (model.error == nil ? "Claude…" : "Claude ⚠") : nil
         let items: [StatusImage.Item] = [.init(label: "5H", forecast: model.fiveHour),
                                          .init(label: "WK", forecast: model.week)]
-        func image(_ s: BarStyle) -> NSImage { StatusImage.make(items, now: model.now, style: s, message: message) }
-
-        // The item's right edge stays put as its width changes, so when it's currently
-        // visible we can tell which styles would fit and take the widest, growing back
-        // when room frees up. Otherwise fall back to stepping down after a check.
-        if pinnedStyle == nil, let room = roomToLeftEdge {
-            let fitting = BarStyle.allCases.first { image($0).size.width + 8 <= room } ?? .compact
-            if fitting != style { log("room \(Int(room))pt: \(style.rawValue) -> \(fitting.rawValue)") }
-            style = fitting
-        }
-        let img = image(style)
+        let img = StatusImage.make(items, now: model.now, style: style, message: message)
         statusItem.button?.image = img
         statusItem.length = img.size.width + 8
         statusItem.button?.toolTip = model.error?.localizedDescription ?? "Top: 5-hour window · Bottom: week"
-        scheduleFitCheck()
-    }
-
-    // MARK: Fitting
-
-    private func resetFit() {
-        guard pinnedStyle == nil, statusItem != nil else { return }
-        style = .full
-        loggedStyle = nil
-        redraw()
-    }
-
-    /// macOS hides status items that don't fit (e.g. behind the notch) by moving their
-    /// window off screen. If that happened, step down to a narrower style.
-    private func scheduleFitCheck() {
-        guard pinnedStyle == nil else { return }
-        fitCheck?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self, !self.screensAsleep else { return }
-                let frame = self.statusItem.button?.window?.frame ?? .zero
-                let visible = self.isVisible
-                guard !visible, let next = self.style.narrower else {
-                    if self.loggedStyle != self.style {
-                        log(visible ? "fits: \(self.style.rawValue) at \(frame)"
-                                    : "still hidden at \(frame) with the narrowest style; free up menu bar space")
-                        self.loggedStyle = self.style
-                    }
-                    return
-                }
-                log("hidden at \(frame) with \(self.style.rawValue); trying \(next.rawValue)")
-                self.style = next
-                self.redraw()
-            }
-        }
-        fitCheck = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
-    }
-
-    /// Width available between the item's right edge and the notch (or screen edge),
-    /// or nil if the item isn't visible now and its position can't be trusted.
-    private var roomToLeftEdge: CGFloat? {
-        guard isVisible, let w = statusItem.button?.window,
-              let screen = NSScreen.screens.first(where: { $0.frame.contains(NSPoint(x: w.frame.midX, y: w.frame.midY)) })
-        else { return nil }
-        let limit = screen.auxiliaryTopRightArea?.minX ?? screen.frame.minX
-        return w.frame.maxX - limit
-    }
-
-    private var isVisible: Bool {
-        guard let w = statusItem.button?.window, w.occlusionState.contains(.visible),
-              let screen = NSScreen.screens.first(where: { $0.frame.contains(NSPoint(x: w.frame.midX, y: w.frame.midY)) })
-        else { return false }
-        // On a notched display an item can sit partly behind the notch while still
-        // counting as on screen and visible, so check it against the notch's span.
-        if let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea,
-           w.frame.maxX > left.maxX, w.frame.minX < right.minX {
-            return false
-        }
-        return screen.frame.contains(w.frame)
     }
 
     @objc private func toggle() {
@@ -161,12 +78,12 @@ enum Preview {
             w.map { Forecast.make(utilization: $0.utilization, resetsAt: $0.resetsAt, windowLength: len, now: now, schedule: schedule) }
         }
         let sets: [[StatusImage.Item]] = [
-            [.init(label: "5H", forecast: fc(live?.fiveHour, MeterModel.fiveHourLength)),
-             .init(label: "WK", forecast: fc(live?.week, MeterModel.weekLength))],
-            [.init(label: "5H", forecast: fc(LimitWindow(utilization: 41, resetsAt: now.addingTimeInterval(6780)), MeterModel.fiveHourLength)),
-             .init(label: "WK", forecast: fc(LimitWindow(utilization: 71, resetsAt: now.addingTimeInterval(4.6 * 86400)), MeterModel.weekLength))],
-            [.init(label: "5H", forecast: fc(LimitWindow(utilization: 60, resetsAt: now.addingTimeInterval(3600)), MeterModel.fiveHourLength)),
-             .init(label: "WK", forecast: fc(LimitWindow(utilization: 20, resetsAt: now.addingTimeInterval(4.6 * 86400)), MeterModel.weekLength))],
+            [.init(label: "5H", forecast: fc(live?.fiveHour, LimitKind.fiveHour.length)),
+             .init(label: "WK", forecast: fc(live?.week, LimitKind.week.length))],
+            [.init(label: "5H", forecast: fc(LimitWindow(utilization: 41, resetsAt: now.addingTimeInterval(6780)), LimitKind.fiveHour.length)),
+             .init(label: "WK", forecast: fc(LimitWindow(utilization: 71, resetsAt: now.addingTimeInterval(4.6 * 86400)), LimitKind.week.length))],
+            [.init(label: "5H", forecast: fc(LimitWindow(utilization: 60, resetsAt: now.addingTimeInterval(3600)), LimitKind.fiveHour.length)),
+             .init(label: "WK", forecast: fc(LimitWindow(utilization: 20, resetsAt: now.addingTimeInterval(4.6 * 86400)), LimitKind.week.length))],
         ]
         let images = BarStyle.allCases.flatMap { s in sets.map { StatusImage.make($0, now: now, style: s) } }
         let pad: CGFloat = 8, rowH = StatusImage.height, scale: CGFloat = 2
@@ -201,26 +118,32 @@ enum Preview {
 
 extension Preview {
     /// Renders the real popover view offscreen with sample data (no API calls, so it
-    /// can't eat into the usage endpoint's rate limit): an on-track state and a
-    /// warning/danger state, each in light and dark, side by side.
+    /// can't eat into the usage endpoint's rate limit): the Now tab on track and in
+    /// warning/danger, then the Days, Weeks (squeezed and to scale) and 5h windows tabs.
+    /// Light on top, dark below. With CLAUDE_METER_DATA_DIR set, it shows that folder's
+    /// history instead; point it at a copy, since loading can prune or migrate it.
     static func renderPopover(to path: String) async {
-        let now = Date()
-        func model(five: Double, week: Double) -> MeterModel {
-            let m = MeterModel()
-            let fw = LimitWindow(utilization: five, resetsAt: now.addingTimeInterval(3600))
-            let ww = LimitWindow(utilization: week, resetsAt: now.addingTimeInterval(4.6 * 86400))
-            let start = ww.resetsAt.addingTimeInterval(-MeterModel.weekLength)
-            let samples = stride(from: 0.0, through: 1.0, by: 0.05).map { t in
-                Sample(at: start.addingTimeInterval(t * now.timeIntervalSince(start)),
-                       fiveHour: t > 0.8 ? five * (t - 0.8) / 0.2 : nil, week: week * t)
-            }
-            m.show(UsageSnapshot(fiveHour: fw, week: ww, fetchedAt: now), history: samples)
-            return m
-        }
+        let real = ProcessInfo.processInfo.environment["CLAUDE_METER_DATA_DIR"] != nil
+        let now = real ? Date() : SampleData.now()
+        let demo = real ? Meter.load(now: now) : SampleData.meter(now: now)
+        var hot = demo.history
+        let last = hot.last
+        hot.append(Sample(at: now, fiveHour: 60, week: 71,
+                          fiveHourResetsAt: last?.fiveHourResetsAt, weekResetsAt: last?.weekResetsAt))
+        let danger = Meter(config: demo.config, snapshot: UsageSnapshot(
+            fiveHour: last?.fiveHourResetsAt.map { LimitWindow(utilization: 60, resetsAt: $0) },
+            week: last?.weekResetsAt.map { LimitWindow(utilization: 71, resetsAt: $0) }, fetchedAt: now), history: hot)
+        let shots: [(Meter, PopoverView.Tab, Bool)] = [(demo, .now, true), (danger, .now, true), (demo, .days, true),
+                                                       (demo, .weeks, true), (demo, .weeks, false), (demo, .windows, true)]
 
-        var shots: [NSBitmapImageRep] = []
-        for model in [model(five: 20, week: 12), model(five: 60, week: 71)] {
-            for name in [NSAppearance.Name.aqua, .darkAqua] {
+        var rows: [[NSBitmapImageRep]] = []
+        for name in [NSAppearance.Name.aqua, .darkAqua] {
+            var row: [NSBitmapImageRep] = []
+            for (meter, tab, squeeze) in shots {
+                let model = MeterModel(meter: meter)
+                model.show(meter, at: now)
+                model.tab = tab
+                model.squeezeOffHours = squeeze
                 let host = NSHostingView(rootView: PopoverView(model: model))
                 let window = NSWindow(contentRect: NSRect(x: -4000, y: -4000, width: 340, height: 600),
                                       styleMask: [.borderless], backing: .buffered, defer: false)
@@ -233,23 +156,28 @@ extension Preview {
                 host.layoutSubtreeIfNeeded()
                 if let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
                     host.cacheDisplay(in: host.bounds, to: rep)
-                    shots.append(rep)
+                    row.append(rep)
                 }
                 window.orderOut(nil)
             }
+            rows.append(row)
         }
 
         let gap: CGFloat = 16
-        let w = shots.reduce(0) { $0 + $1.size.width } + gap * CGFloat(shots.count + 1)
-        let h = (shots.map(\.size.height).max() ?? 0) + gap * 2
+        let cellW = (rows.flatMap { $0 }.map(\.size.width).max() ?? 0) + gap
+        let rowHs = rows.map { ($0.map(\.size.height).max() ?? 0) + gap }
+        let w = cellW * CGFloat(shots.count) + gap
+        let h = rowHs.reduce(gap, +)
         let out = NSImage(size: NSSize(width: w, height: h))
         out.lockFocus()
         NSColor(white: 0.5, alpha: 1).setFill()
         NSRect(x: 0, y: 0, width: w, height: h).fill()
-        var x = gap
-        for rep in shots {
-            rep.draw(in: NSRect(x: x, y: h - gap - rep.size.height, width: rep.size.width, height: rep.size.height))
-            x += rep.size.width + gap
+        var top = h - gap
+        for (row, rowH) in zip(rows, rowHs) {
+            for (i, rep) in row.enumerated() {
+                rep.draw(in: NSRect(x: gap + CGFloat(i) * cellW, y: top - rep.size.height, width: rep.size.width, height: rep.size.height))
+            }
+            top -= rowH
         }
         out.unlockFocus()
         if let tiff = out.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {

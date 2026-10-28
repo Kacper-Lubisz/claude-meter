@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 public struct LimitWindow: Codable, Equatable, Sendable {
     public var utilization: Double
@@ -9,6 +12,12 @@ public struct LimitWindow: Codable, Equatable, Sendable {
     }
 }
 
+/// The two limits the meter follows.
+public enum LimitKind: String, CaseIterable, Codable, Sendable {
+    case fiveHour, week
+    public var length: TimeInterval { self == .fiveHour ? 5 * 3600 : 7 * 86400 }
+}
+
 public struct UsageSnapshot: Codable, Equatable, Sendable {
     public var fiveHour: LimitWindow?
     public var week: LimitWindow?
@@ -17,9 +26,11 @@ public struct UsageSnapshot: Codable, Equatable, Sendable {
     public init(fiveHour: LimitWindow?, week: LimitWindow?, fetchedAt: Date) {
         self.fiveHour = fiveHour; self.week = week; self.fetchedAt = fetchedAt
     }
+
+    public func window(_ kind: LimitKind) -> LimitWindow? { kind == .fiveHour ? fiveHour : week }
 }
 
-public enum UsageError: Error, Equatable, LocalizedError {
+public enum UsageError: Error, Equatable, Codable, Sendable, LocalizedError {
     case noLogin, loginExpired, rateLimited(retryAfter: TimeInterval?), http(Int), badResponse, network(String)
 
     public var errorDescription: String? {
@@ -35,16 +46,14 @@ public enum UsageError: Error, Equatable, LocalizedError {
 }
 
 /// Reads limit usage from the endpoint behind Claude Code's `/usage`,
-/// authenticating with Claude Code's own OAuth login from the Keychain.
-/// The token is only read, never refreshed or written, so Claude Code stays in charge of it.
+/// authenticating with Claude Code's own OAuth login (see `Credentials`).
 public struct UsageClient: Sendable {
     public static let endpoint = URL(string: "https://api.anthropic.com/api/oauth/usage")!
-    public static let keychainService = "Claude Code-credentials"
 
     public init() {}
 
     public func fetch() async throws -> UsageSnapshot {
-        let token = try Self.readToken()
+        let token = try Credentials.accessToken()
         var req = URLRequest(url: Self.endpoint, timeoutInterval: 20)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
@@ -82,28 +91,5 @@ public struct UsageClient: Sendable {
     public static func parseDate(_ s: String) -> Date? {
         let trimmed = s.replacingOccurrences(of: #"\.\d+"#, with: "", options: .regularExpression)
         return ISO8601DateFormatter().date(from: trimmed)
-    }
-
-    // MARK: - Keychain
-
-    static func readToken(now: Date = Date()) throws -> String {
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
-        p.arguments = ["find-generic-password", "-s", keychainService, "-w"]
-        let out = Pipe()
-        p.standardOutput = out
-        p.standardError = FileHandle.nullDevice
-        do { try p.run() } catch { throw UsageError.noLogin }
-        let data = out.fileHandleForReading.readDataToEndOfFile()
-        p.waitUntilExit()
-        guard p.terminationStatus == 0 else { throw UsageError.noLogin }
-
-        struct Creds: Decodable {
-            struct OAuth: Decodable { var accessToken: String; var expiresAt: Double? }
-            var claudeAiOauth: OAuth?
-        }
-        guard let oauth = (try? JSONDecoder().decode(Creds.self, from: data))?.claudeAiOauth else { throw UsageError.noLogin }
-        if let exp = oauth.expiresAt, Date(timeIntervalSince1970: exp / 1000) < now { throw UsageError.loginExpired }
-        return oauth.accessToken
     }
 }

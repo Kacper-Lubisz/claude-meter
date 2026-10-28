@@ -21,6 +21,8 @@ enum Palette {
     static let muted      = dynamic(light: 0x4B4B55, dark: 0xB8B8C2) // ~8:1
     static let hairline   = dynamic(light: 0xD4D4DA, dark: 0x3C3C44)
     static let track      = dynamic(light: 0xE2E2E7, dark: 0x34343B)
+    /// Working hours behind a chart's lines.
+    static let band       = dynamic(light: 0xE9E9EE, dark: 0x2C2C32)
     static let accent     = dynamic(light: 0x0A5CC2, dark: 0x6EADFF) // ~6:1 / ~7:1
     static let ok         = dynamic(light: 0x17784A, dark: 0x4ADE80) // ~5.3:1 / ~10:1
     static let warn       = dynamic(light: 0xA14A00, dark: 0xFDB54A) // ~5.6:1 / ~10:1

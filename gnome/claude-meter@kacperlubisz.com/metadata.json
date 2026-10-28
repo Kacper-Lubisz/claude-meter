@@ -1,0 +1,7 @@
+{
+  "uuid": "claude-meter@kacperlubisz.com",
+  "name": "Claude Meter",
+  "description": "Claude's 5-hour and weekly limits in the top bar: usage, working-hours forecasts, and how days, weeks and 5-hour windows compare. Needs the claude-meter command (scripts/install-linux.sh).",
+  "shell-version": ["45", "46", "47", "48", "49", "50", "51"],
+  "url": "https://github.com/Kacper-Lubisz/claude-meter"
+}

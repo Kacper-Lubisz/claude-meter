@@ -3,18 +3,34 @@ import MeterCore
 import SwiftUI
 
 struct PopoverView: View {
+    enum Tab: String, CaseIterable {
+        case now = "Now", days = "Days", weeks = "Weeks", windows = "5h windows"
+    }
+
     @ObservedObject var model: MeterModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            Picker("View", selection: $model.tab) {
+                ForEach(Tab.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented).labelsHidden()
             if let e = model.error, model.snapshot == nil {
                 Text(e.localizedDescription).foregroundStyle(Palette.warn).fixedSize(horizontal: false, vertical: true)
             }
-            WindowCard(title: "5-hour window", forecast: model.fiveHour, now: model.now,
-                       samples: model.history.compactMap { s in s.fiveHour.map { (s.at, $0) } })
-            Divider().overlay(Palette.hairline)
-            WindowCard(title: "Week", forecast: model.week, now: model.now,
-                       samples: model.history.compactMap { s in s.week.map { (s.at, $0) } })
+            switch model.tab {
+            case .now:
+                card("5-hour window", .fiveHour, model.fiveHour)
+                Divider().overlay(Palette.hairline)
+                card("Week", .week, model.week)
+            case .days:
+                DaysView(trends: model.trends, schedule: model.config.schedule, now: model.now,
+                         picked: model.pickedDay, squeeze: $model.squeezeOffHours) { model.pickedDay = $0 }
+            case .weeks:
+                windows(.week)
+            case .windows:
+                windows(.fiveHour)
+            }
             Divider().overlay(Palette.hairline)
             footer
         }
@@ -24,12 +40,29 @@ struct PopoverView: View {
         .background(Palette.background)
     }
 
+    private func windows(_ kind: LimitKind) -> WindowHistoryView {
+        WindowHistoryView(kind: kind, trends: model.trends, schedule: model.config.schedule, now: model.now,
+                          picked: model.pickedWindow[kind], squeeze: $model.squeezeOffHours) { model.pickedWindow[kind] = $0 }
+    }
+
+    private func card(_ title: String, _ kind: LimitKind, _ f: Forecast?) -> WindowCard {
+        let latest = model.trends.latest(kind)
+        let axis = f.map { TimeAxis(from: $0.windowStart, to: $0.resetsAt, schedule: model.config.schedule,
+                                    weights: kind == .week && model.squeezeOffHours ? TimeAxis.squeezed : TimeAxis.toScale) }
+        return WindowCard(title: title, forecast: f, now: model.now,
+                          samples: latest?.readings.map { ($0.at, $0.used) } ?? [],
+                          comparison: model.trends.compare(kind, now: model.now),
+                          resets: latest.flatMap { $0.isOpen(at: model.now) ? $0.earlyResets : nil } ?? [],
+                          axis: axis, labels: axis.map { kind == .week ? $0.dayLabels : $0.hourLabels } ?? [])
+    }
+
     private var footer: some View {
         VStack(alignment: .leading, spacing: 6) {
-            let s = model.config.schedule
-            Text(model.isWorkingNow
-                 ? "Counting \(days(s)) \(s.dayStart)–\(s.dayEnd)"
-                 : "Outside working hours (\(days(s)) \(s.dayStart)–\(s.dayEnd)). Forecasts assume you stop until then.")
+            if let v = model.newerVersion {
+                Text(Format.outdated(repo: v)).font(.caption).foregroundStyle(Palette.warn)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text(Format.schedule(model.config.schedule, workingNow: model.isWorkingNow))
                 .font(.caption).foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true)
             if let e = model.error, model.snapshot != nil {
                 Text(e.localizedDescription).font(.caption).foregroundStyle(Palette.warn)
@@ -46,10 +79,6 @@ struct PopoverView: View {
             .controlSize(.small)
         }
     }
-
-    private func days(_ s: WorkSchedule) -> String {
-        s.workdays == [1, 2, 3, 4, 5] ? "Mon–Fri" : "\(s.workdays.count) days/wk"
-    }
 }
 
 struct WindowCard: View {
@@ -57,6 +86,11 @@ struct WindowCard: View {
     let forecast: Forecast?
     let now: Date
     let samples: [(Date, Double)]
+    let comparison: WindowComparison?
+    /// Early resets in the open window.
+    let resets: [EarlyReset]
+    let axis: TimeAxis?
+    let labels: [(Double, String)]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -71,7 +105,7 @@ struct WindowCard: View {
             if let f = forecast {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(Format.percent(f.utilization)).font(.system(size: 26, weight: .bold)).monospacedDigit()
-                    Text(verdict(f)).font(.callout.weight(.semibold)).foregroundStyle(Palette.status(f.status))
+                    Text(Format.verdict(f, now: now)).font(.callout.weight(.semibold)).foregroundStyle(Palette.status(f.status))
                 }
                 Track(forecast: f).frame(height: 10)
                 chart(f)
@@ -79,16 +113,12 @@ struct WindowCard: View {
                 row("Projected at reset", Format.percent(f.projected), f.status == .ok ? Palette.text : Palette.status(f.status))
                 row("Work time left", Format.workHours(f.remainingWork))
                 if let a = f.affordablePerHour { row("Pace to finish at 100%", Format.rate(a)) }
+                if let c = comparison, c.isOpen { row(Format.baselineLabel(c), Format.comparison(c)) }
+                ForEach(Array(resets.enumerated()), id: \.offset) { _, r in row("Reset early", Format.earlyReset(r, now: now)) }
             } else {
                 Text("No data yet").foregroundStyle(Palette.muted)
             }
         }
-    }
-
-    private func verdict(_ f: Forecast) -> String {
-        if f.utilization >= 100 { return "limit reached" }
-        if let out = f.runsOutAt { return "runs out \(Format.moment(out, now: now))" }
-        return f.status == .warn ? "cutting it close" : "on track"
     }
 
     private func row(_ k: String, _ v: String, _ c: Color = Palette.text) -> some View {
@@ -100,32 +130,29 @@ struct WindowCard: View {
         .font(.callout)
     }
 
-    /// Usage so far in this window, plus a dashed line to the projected value at reset.
+    /// Usage so far in this window (what the limit shows, so it drops at an early reset),
+    /// plus a dashed line to the projected value at reset.
     @ViewBuilder private func chart(_ f: Forecast) -> some View {
         let points = samples.filter { $0.0 >= f.windowStart }
-        if points.count >= 2 {
+        if points.count >= 2, let axis {
             let end = f.runsOutAt ?? f.resetsAt
             let endValue = f.runsOutAt != nil ? 100 : f.projected
             Chart {
+                WorkBands(axis: axis)
+                ResetMarks(xs: resets.map { axis.x($0.at) }, color: Palette.accent)
                 ForEach(Array(points.enumerated()), id: \.offset) { _, p in
-                    LineMark(x: .value("Time", p.0), y: .value("Used", p.1), series: .value("s", "used"))
+                    LineMark(x: .value("Time", axis.x(p.0)), y: .value("Used", p.1), series: .value("s", "used"))
                         .foregroundStyle(Palette.accent).lineStyle(StrokeStyle(lineWidth: 2))
                 }
-                LineMark(x: .value("Time", now), y: .value("Used", f.utilization), series: .value("s", "proj"))
+                LineMark(x: .value("Time", axis.x(now)), y: .value("Used", f.utilization), series: .value("s", "proj"))
                     .foregroundStyle(Palette.status(f.status)).lineStyle(StrokeStyle(lineWidth: 2, dash: [4, 3]))
-                LineMark(x: .value("Time", end), y: .value("Used", endValue), series: .value("s", "proj"))
+                LineMark(x: .value("Time", axis.x(end)), y: .value("Used", endValue), series: .value("s", "proj"))
                     .foregroundStyle(Palette.status(f.status)).lineStyle(StrokeStyle(lineWidth: 2, dash: [4, 3]))
                 RuleMark(y: .value("Limit", 100)).foregroundStyle(Palette.muted)
                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [2, 3]))
             }
-            .chartXScale(domain: f.windowStart...f.resetsAt)
             .chartYScale(domain: 0...max(100, endValue))
-            .chartXAxis {
-                AxisMarks(preset: .aligned, values: .automatic(desiredCount: 4)) { _ in
-                    AxisGridLine().foregroundStyle(Palette.hairline)
-                    AxisValueLabel().foregroundStyle(Palette.muted)
-                }
-            }
+            .timeAxis(axis, labels: labels)
             .chartYAxis {
                 AxisMarks(values: [0, 50, 100]) { _ in
                     AxisGridLine().foregroundStyle(Palette.hairline)
@@ -138,7 +165,7 @@ struct WindowCard: View {
     }
 }
 
-/// Wide version of the menu bar's mini bar: solid = used, lighter = projected by reset.
+/// Wide version of the menu bar's mini bar: fill = used, tick = working time elapsed.
 struct Track: View {
     let forecast: Forecast
 
@@ -146,12 +173,15 @@ struct Track: View {
         GeometryReader { g in
             let w = g.size.width
             let used = min(1, forecast.utilization / 100)
-            let proj = min(1, max(used, forecast.projected / 100))
-            let fill = Palette.fill(forecast.status)
             ZStack(alignment: .leading) {
                 Capsule().fill(Palette.track)
-                Capsule().fill(fill.opacity(0.35)).frame(width: w * proj)
-                Capsule().fill(fill).frame(width: max(2, w * used))
+                Capsule().fill(Palette.fill(forecast.status)).frame(width: max(2, w * used))
+                if let t = forecast.elapsedFraction {
+                    Rectangle().fill(Palette.text)
+                        .frame(width: 2, height: g.size.height + 6)
+                        .padding(.horizontal, 1.5).background(Palette.background)
+                        .offset(x: w * min(1, t) - 2.5)
+                }
             }
         }
     }

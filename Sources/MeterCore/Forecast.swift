@@ -23,6 +23,12 @@ public struct Forecast: Equatable, Sendable {
     public static let minimumElapsed: TimeInterval = 15 * 60
     public static let warnThreshold = 90.0
 
+    /// How far through the window's working time we are, 0...1; nil if it has none.
+    public var elapsedFraction: Double? {
+        let total = elapsedWork + remainingWork
+        return total > 0 ? elapsedWork / total : nil
+    }
+
     public static func make(utilization: Double, resetsAt: Date, windowLength: TimeInterval,
                             now: Date, schedule: WorkSchedule, calendar: Calendar = .current) -> Forecast {
         let start = resetsAt.addingTimeInterval(-windowLength)
